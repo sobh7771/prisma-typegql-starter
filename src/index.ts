@@ -1,25 +1,52 @@
+/* eslint-disable import/no-extraneous-dependencies */
 import 'reflect-metadata';
 import express from 'express';
 import cors from 'cors';
 import { ApolloServer } from '@apollo/server';
 import { expressMiddleware } from '@apollo/server/express4';
+import { WebSocketServer } from 'ws';
+import { useServer } from 'graphql-ws/lib/use/ws';
+import { ApolloServerPluginDrainHttpServer } from '@apollo/server/plugin/drainHttpServer';
 
+import { createServer } from 'http';
 import createSchema from './modules';
 
 async function bootstrap() {
   const app = express();
+  const httpServer = createServer(app);
 
-  const {
-    PORT = 3000,
-    IS_PLAYGROUND_ENABLED = 'true',
-    IS_INTROSPECTION_ENABLED = 'true',
-  } = process.env;
+  // Creating the WebSocket server
+  const wsServer = new WebSocketServer({
+    // This is the `httpServer` we created in a previous step.
+    server: httpServer,
+    // Pass a different path here if app.use
+    // serves expressMiddleware at a different path
+    path: '/graphql',
+  });
 
-  const introspection = IS_PLAYGROUND_ENABLED === 'true' || IS_INTROSPECTION_ENABLED === 'true';
+  const schema = await createSchema();
+  // Save the returned server's info so we can shutdown this server later
+  const serverCleanup = useServer({ schema }, wsServer);
+
+  const { PORT = 3000 } = process.env;
 
   const apolloServer = new ApolloServer({
-    schema: await createSchema(),
-    introspection,
+    schema,
+    plugins: [
+      // Proper shutdown for the HTTP server.
+      ApolloServerPluginDrainHttpServer({ httpServer }),
+
+      // Proper shutdown for the WebSocket server.
+      {
+        async serverWillStart() {
+          return {
+            async drainServer() {
+              await serverCleanup.dispose();
+            },
+          };
+        },
+      },
+    ],
   });
 
   app.use(cors());
@@ -30,7 +57,7 @@ async function bootstrap() {
 
   app.use(expressMiddleware(apolloServer));
 
-  app.listen(PORT, () => console.log(`server ready on http://localhost:${PORT}/graphql`));
+  httpServer.listen(PORT, () => console.log(`server ready on http://localhost:${PORT}/graphql`));
 }
 
 bootstrap();
